@@ -15,7 +15,7 @@ print("=" * 70)
 JIRA_URL = os.getenv("JIRA_URL")
 JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
-CLOUD_ID = os.getenv("CLOUD_ID")  # Ваш Cloud ID
+CLOUD_ID = os.getenv("CLOUD_ID", "c8611945-b92c-42e7-9b35-6eab5509257e")
 
 print(f"🔗 Cloud ID: {CLOUD_ID}")
 print(f"📧 Email: {JIRA_EMAIL}")
@@ -103,14 +103,15 @@ except Exception as e:
     print(f"⚠️ Ошибка: {e}")
 
 # =============================================
-# 4. Поиск задач (JQL) с ограничением
+# 4. Поиск задач (JQL) с полями
 # =============================================
 
-print("\n4️⃣ Поиск задач...")
+print("\n4️⃣ Поиск задач в проекте KAN...")
 try:
-    # Ищем задачи в проекте KAN (замените на свой проект)
+    # ✅ Добавляем параметр fields
     jql = "project = KAN ORDER BY created DESC"
-    url = f"{JIRA_API_URL}/rest/api/3/search/jql?jql={requests.utils.quote(jql)}&maxResults=10"
+    fields = "summary,status,assignee,created,updated,priority"
+    url = f"{JIRA_API_URL}/rest/api/3/search/jql?jql={requests.utils.quote(jql)}&fields={fields}&maxResults=10"
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
@@ -121,14 +122,14 @@ try:
         print(f"📊 Показано (первые 10): {len(issues)}")
         
         if issues:
-            print("\n📋 Примеры задач:")
-            for issue in issues[:5]:
+            print("\n📋 Список задач в проекте KAN:")
+            for issue in issues:
                 key = issue.get('key', '')
-                fields = issue.get('fields', {})
-                assignee = fields.get('assignee')
+                fields_data = issue.get('fields', {})
+                assignee = fields_data.get('assignee')
                 assignee_name = assignee.get('displayName', 'Не назначен') if assignee else 'Не назначен'
-                status = fields.get('status', {}).get('name', 'Неизвестно')
-                summary = fields.get('summary', '')[:50]
+                status = fields_data.get('status', {}).get('name', 'Неизвестно')
+                summary = fields_data.get('summary', '')[:50]
                 print(f"  - {key}: {summary}...")
                 print(f"    Статус: {status}")
                 print(f"    Исполнитель: {assignee_name}")
@@ -141,13 +142,14 @@ except Exception as e:
     print(f"⚠️ Ошибка: {e}")
 
 # =============================================
-# 5. Поиск задач по всем проектам (без ограничения)
+# 5. Поиск задач по всем проектам
 # =============================================
 
 print("\n5️⃣ Поиск задач по всем проектам...")
 try:
     jql = "project in (TC, KAN, LEBM, AVIP) ORDER BY created DESC"
-    url = f"{JIRA_API_URL}/rest/api/3/search/jql?jql={requests.utils.quote(jql)}&maxResults=10"
+    fields = "summary,status,assignee,created,updated,priority,project"
+    url = f"{JIRA_API_URL}/rest/api/3/search/jql?jql={requests.utils.quote(jql)}&fields={fields}&maxResults=10"
     response = requests.get(url, headers=headers)
     
     if response.status_code == 200:
@@ -159,13 +161,15 @@ try:
         
         if issues:
             print("\n📋 Задачи по проектам:")
-            for issue in issues[:5]:
+            for issue in issues:
                 key = issue.get('key', '')
-                fields = issue.get('fields', {})
-                project = fields.get('project', {}).get('key', 'Неизвестно')
-                status = fields.get('status', {}).get('name', 'Неизвестно')
-                summary = fields.get('summary', '')[:40]
+                fields_data = issue.get('fields', {})
+                project = fields_data.get('project', {}).get('key', 'Неизвестно')
+                status = fields_data.get('status', {}).get('name', 'Неизвестно')
+                summary = fields_data.get('summary', '')[:40]
                 print(f"  - {key} ({project}): {summary}... → {status}")
+        else:
+            print("   ℹ️ В проектах нет задач")
     else:
         print(f"⚠️ Ошибка поиска: {response.status_code}")
         print(f"   {response.text[:200]}")
