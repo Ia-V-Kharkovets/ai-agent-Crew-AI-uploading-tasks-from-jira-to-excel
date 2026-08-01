@@ -1,4 +1,4 @@
-# jira_agent_gemini.py - Агент для Jira с поддержкой нескольких проектов
+# jira_agent_gemini.py - Агент для Jira с Google Gemini и созданием Excel-отчёта
 import os
 import json
 import base64
@@ -14,7 +14,7 @@ import pandas as pd
 load_dotenv("crewAI_Settings.env")
 
 # =============================================
-# НАСТРОЙКА JIRA
+# НАСТРОЙКА JIRA (ДЛЯ SCOPED-ТОКЕНА)
 # =============================================
 
 JIRA_URL = os.getenv("JIRA_URL")
@@ -24,6 +24,12 @@ JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 if not all([JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN]):
     print("❌ Ошибка: Не все настройки Jira заполнены!")
     exit(1)
+
+# ✅ ВАШ CLOUD ID (найденный через _edge/tenant_info)
+CLOUD_ID = os.getenv("CLOUD_ID")
+
+# Используем api.atlassian.com для scoped-токена
+JIRA_API_URL = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}"
 
 auth_string = f"{JIRA_EMAIL}:{JIRA_API_TOKEN}"
 auth_bytes = auth_string.encode('utf-8')
@@ -36,11 +42,11 @@ JIRA_HEADERS = {
 }
 
 # =============================================
-# ПАРАМЕТРЫ ОТЧЁТА
+# ПАРАМЕТРЫ ОТЧЁТА (меняйте здесь!)
 # =============================================
 
-PROJECTS = ["TC", "KAN", "AVIP"]                           # ← Список проектов для анализа
-PERIOD_DAYS = 30                                   # ← Период в днях
+PROJECTS = ["TC", "KAN", "LEBM", "AVIP"]  # ← Ваши проекты
+PERIOD_DAYS = 30                           # ← Период в днях
 
 # =============================================
 # ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ДАННЫХ ИЗ JIRA
@@ -49,7 +55,7 @@ PERIOD_DAYS = 30                                   # ← Период в дня�
 def get_jira_issues_for_project(project_key: str) -> list:
     """Получает задачи из указанного проекта за период."""
     try:
-        url = f"{JIRA_URL}/rest/api/3/search/jql"
+        url = f"{JIRA_API_URL}/rest/api/3/search/jql"
         jql_query = f"project = {project_key} AND updated >= -{PERIOD_DAYS}d"
         params = {
             "jql": jql_query,
@@ -62,23 +68,22 @@ def get_jira_issues_for_project(project_key: str) -> list:
             data = response.json()
             return data.get('issues', [])
         else:
-            print(f"❌ Ошибка API для проекта {project_key}: {response.status_code}")
+            print(f"   ❌ Ошибка API для проекта {project_key}: {response.status_code}")
+            print(f"   {response.text[:200]}")
             return []
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"   ❌ Ошибка: {e}")
         return []
 
 # =============================================
 # ФУНКЦИЯ ДЛЯ СОЗДАНИЯ EXCEL-ОТЧЁТА
 # =============================================
 
-def create_excel_report(issues_data: list, project_key: str) -> str:
+def create_excel_report(issues_data: list, filename: str) -> str:
     """Создаёт Excel-файл с отчётом по задачам."""
     if not issues_data:
-        print(f"⚠️ Нет данных для проекта {project_key}")
+        print("⚠️ Нет данных для создания отчёта")
         return None
-    
-    filename = f"jira_report_{project_key}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
     
     data = []
     for issue in issues_data:
@@ -109,14 +114,17 @@ def create_excel_report(issues_data: list, project_key: str) -> str:
     df = pd.DataFrame(data)
     
     with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        # Вкладка со всеми задачами
         df.to_excel(writer, sheet_name='Все задачи', index=False)
         
+        # Вкладки по статусам (автоматически)
         unique_statuses = df['Статус'].unique()
         for status in unique_statuses:
             status_df = df[df['Статус'] == status]
-            sheet_name = status[:31]
+            sheet_name = status[:31]  # Excel ограничение - 31 символ
             status_df.to_excel(writer, sheet_name=sheet_name, index=False)
         
+        # Сводка по исполнителям
         summary = df.groupby('Исполнитель').agg({
             'Ключ': 'count',
             'Название': lambda x: ', '.join(x)
@@ -124,9 +132,11 @@ def create_excel_report(issues_data: list, project_key: str) -> str:
         summary.columns = ['Исполнитель', 'Количество задач', 'Список задач']
         summary.to_excel(writer, sheet_name='Сводка', index=False)
         
+        # Статистика по статусам
         status_summary = df.groupby('Статус').size().reset_index(name='Количество')
         status_summary.to_excel(writer, sheet_name='Статусы', index=False)
         
+        # Автоматическая подгонка ширины колонок
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]
             for column in worksheet.columns:
@@ -151,7 +161,7 @@ def create_excel_report(issues_data: list, project_key: str) -> str:
 def search_jira(jql_query: str) -> str:
     """Выполняет поиск задач в Jira по JQL-запросу."""
     try:
-        url = f"{JIRA_URL}/rest/api/3/search/jql"
+        url = f"{JIRA_API_URL}/rest/api/3/search/jql"
         params = {
             "jql": jql_query,
             "maxResults": 100,
@@ -171,7 +181,7 @@ def search_jira(jql_query: str) -> str:
 def get_projects() -> str:
     """Получает список всех проектов в Jira."""
     try:
-        url = f"{JIRA_URL}/rest/api/3/project"
+        url = f"{JIRA_API_URL}/rest/api/3/project"
         response = requests.get(url, headers=JIRA_HEADERS)
         if response.status_code == 200:
             data = response.json()
@@ -186,7 +196,7 @@ def get_projects() -> str:
 def get_statuses() -> str:
     """Получает список всех статусов задач в Jira."""
     try:
-        url = f"{JIRA_URL}/rest/api/3/status"
+        url = f"{JIRA_API_URL}/rest/api/3/status"
         response = requests.get(url, headers=JIRA_HEADERS)
         if response.status_code == 200:
             data = response.json()
@@ -244,7 +254,7 @@ analyst_agent = Agent(
 
 task = Task(
     description=f"""
-    Проанализируй все задачи в проекте {PROJECTS} за последние {PERIOD_DAYS} дней.
+    Проанализируй все задачи в проектах {', '.join(PROJECTS)} за последние {PERIOD_DAYS} дней.
     
     Выполни следующие шаги:
     1. Используй get_projects, чтобы убедиться, что проекты существуют.
@@ -270,56 +280,112 @@ crew = Crew(
 # =============================================
 
 def main():
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("🚀 ЗАПУСК АГЕНТА ДЛЯ JIRA")
-    print("=" * 60)
+    print("=" * 70)
     print(f"📁 Проекты: {', '.join(PROJECTS)}")
     print(f"📅 Период: последние {PERIOD_DAYS} дней")
-    print("=" * 60)
+    print(f"🔗 Cloud ID: {CLOUD_ID}")
+    print("=" * 70)
     
-    # Получаем задачи для КАЖДОГО проекта
     all_issues = []
+    total_found = 0
+    project_stats = {}
+    
     for project in PROJECTS:
         print(f"\n📥 Получение данных из проекта {project}...")
         issues = get_jira_issues_for_project(project)
         if issues:
             print(f"   ✅ Найдено задач в {project}: {len(issues)}")
             all_issues.extend(issues)
+            total_found += len(issues)
+            project_stats[project] = len(issues)
         else:
             print(f"   ⚠️ В проекте {project} нет задач за последние {PERIOD_DAYS} дней!")
     
-    # Создаём Excel-отчёт для всех проектов
-    if all_issues:
-        print(f"\n✅ Всего найдено задач: {len(all_issues)}")
-        excel_file = create_excel_report(all_issues, "all_projects")
-        if excel_file:
-            print(f"✅ Excel-отчёт создан: {excel_file}")
-            
-            print("\n📋 Найденные задачи:")
-            for issue in all_issues:
-                key = issue.get('key', '')
-                fields = issue.get('fields', {})
-                status = fields.get('status', {}).get('name', 'Неизвестно')
-                assignee = fields.get('assignee', {})
-                assignee_name = assignee.get('displayName', 'Не назначен') if assignee else 'Не назначен'
-                print(f"   - {key}: {status} → {assignee_name}")
-    else:
-        print(f"⚠️ Нет задач в проектах {', '.join(PROJECTS)} за последние {PERIOD_DAYS} дней!")
+    print("\n" + "-" * 70)
+    print(f"📊 ИТОГО НАЙДЕНО ЗАДАЧ: {total_found}")
+    print("-" * 70)
     
-    # Запускаем агента
-    print("\n🤖 Запуск агента...")
+    excel_file = None
+    
+    if all_issues:
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        filename = f"jira_report_{timestamp}.xlsx"
+        
+        print(f"\n📝 Создание Excel-отчёта...")
+        excel_file = create_excel_report(all_issues, filename)
+        
+        if excel_file:
+            print("\n" + "=" * 70)
+            print("✅ ОТЧЁТ УСПЕШНО СОЗДАН!")
+            print("=" * 70)
+            print(f"📁 Файл: {excel_file}")
+            print(f"📊 Всего задач: {total_found}")
+            print(f"📂 Папка: {os.path.dirname(excel_file)}")
+            
+            print("\n📋 Распределение по проектам:")
+            for proj, count in project_stats.items():
+                print(f"   - {proj}: {count} задач")
+            
+            print("\n💡 Откройте файл в Excel для просмотра:")
+            print(f"   start {excel_file}")
+            print("=" * 70)
+        else:
+            print("\n❌ Не удалось создать Excel-отчёт")
+    else:
+        print("\n" + "=" * 70)
+        print("⚠️ НЕТ ДАННЫХ ДЛЯ ОТЧЁТА")
+        print("=" * 70)
+        print(f"За последние {PERIOD_DAYS} дней в проектах {', '.join(PROJECTS)} нет задач.")
+        print("=" * 70)
+    
+    # Запускаем агента для текстового отчёта
+    print("\n🤖 Запуск ИИ-агента для текстового анализа...")
+    print("-" * 70)
     try:
         result = crew.kickoff()
-        print("\n" + "=" * 60)
-        print("📊 ОТЧЁТ:")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("📊 ТЕКСТОВЫЙ ОТЧЁТ (ИИ-агент):")
+        print("=" * 70)
         print(result)
+        print("=" * 70)
     except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+        print(f"\n❌ Ошибка при выполнении агента: {e}")
     
-    print("\n" + "=" * 60)
-    print("✅ Анализ завершён!")
-    print("=" * 60)
+    # =============================================
+    # ✅ ИТОГОВАЯ СВОДКА
+    # =============================================
+    print("\n" + "=" * 70)
+    print("📋 ИТОГОВАЯ СВОДКА")
+    print("=" * 70)
+    
+    if all_issues and excel_file:
+        print(f"✅ Excel-отчёт: {excel_file}")
+        print(f"📊 Всего задач: {total_found}")
+        print(f"📁 Папка: {os.path.dirname(excel_file)}")
+        
+        # Распределение по статусам
+        print("\n📈 Распределение по статусам:")
+        status_counts = {}
+        for issue in all_issues:
+            fields = issue.get('fields', {})
+            status = fields.get('status', {}).get('name', 'Неизвестно')
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+            print(f"   - {status}: {count} задач")
+        
+        print("\n📂 Откройте папку с отчётом:")
+        print(f"   explorer {os.path.dirname(excel_file)}")
+        print(f"\n📄 Или откройте файл напрямую:")
+        print(f"   start {excel_file}")
+    else:
+        print("⚠️ Отчёт не создан (нет данных)")
+    
+    print("\n" + "=" * 70)
+    print("✅ АНАЛИЗ ЗАВЕРШЁН!")
+    print("=" * 70)
 
 if __name__ == "__main__":
     main()
